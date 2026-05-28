@@ -84,53 +84,72 @@ configure_cuda()
 # CLI
 # ===========================================================================
 
-def parse_args():
-    p = argparse.ArgumentParser(
-        description='TMC-PINN unified training script',
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
-    )
+def parse_args(
+    pde='reaction',
+    model='PINN',
+    device='cuda:0',
+    seed=1,
+    dtype_start='fp32',
+    optim_start='lbfgs',
+    dtype_switch=None,
+    optim_switch=None,
+    switch_epoch=None,
+    total_epochs=2000,
+    adam_lr=1e-3,
+    lbfgs_tol_grad=1e-8,
+    lbfgs_tol_change=1e-10,
+    out_dir='./results',
+):
+    """
+    Works both from command line and from Jupyter/Python calls.
+    When called from a notebook, pass args directly as keyword arguments.
+    When called from command line, args are read from sys.argv as usual.
+    """
+    import sys
 
-    # --- experiment identity ---
-    p.add_argument('--pde',          type=str, default='reaction',
-                   choices=['reaction', 'wave', 'convection', 'ac'],
-                   help='Which PDE to solve')
-    p.add_argument('--model',        type=str, default='PINN',
-                   help='Model architecture key (see model_dict.py)')
-    p.add_argument('--device',       type=str, default='cuda:0')
-    p.add_argument('--seed',         type=int, default=1)
+    # Detect if we are running inside Jupyter or being called with kwargs
+    # If sys.argv looks like a notebook kernel, skip argparse entirely
+    _in_notebook = any(
+        x in ' '.join(sys.argv)
+        for x in ['ipykernel', 'jupyter', 'ipython', 'kernel']
+    ) or not any(a.startswith('--') for a in sys.argv[1:])
 
-    # --- phase 1 (always runs) ---
-    p.add_argument('--dtype_start',  type=str, default='fp32',
-                   choices=['fp32', 'fp64'],
-                   help='Floating-point dtype for phase 1')
-    p.add_argument('--optim_start',  type=str, default='lbfgs',
-                   choices=['adam', 'lbfgs'],
-                   help='Optimizer for phase 1')
-
-    # --- phase 2 (only runs if switch_epoch < total_epochs) ---
-    p.add_argument('--dtype_switch', type=str, default=None,
-                   choices=['fp32', 'fp64'],
-                   help='Dtype after switch. Omit for static runs (defaults to dtype_start).')
-    p.add_argument('--optim_switch', type=str, default=None,
-                   choices=['adam', 'lbfgs'],
-                   help='Optimizer after switch. Omit for static runs (defaults to optim_start).')
-    p.add_argument('--switch_epoch', type=int, default=None,
-                   help='Epoch at which to perform the switch (1-indexed). '
-                        'None = no switch (static run).')
-
-    # --- training budget ---
-    p.add_argument('--total_epochs', type=int, default=2000)
-
-    # --- optimizer hyperparams ---
-    p.add_argument('--adam_lr',      type=float, default=1e-3)
-    p.add_argument('--lbfgs_tol_grad',   type=float, default=1e-8)
-    p.add_argument('--lbfgs_tol_change', type=float, default=1e-10)
-
-    # --- output ---
-    p.add_argument('--out_dir',      type=str, default='./results',
-                   help='Root output directory. Run-specific subdir is created automatically.')
-
-    args = p.parse_args()
+    if not _in_notebook:
+        # Running from command line — use argparse normally
+        p = argparse.ArgumentParser(
+            description='TMC-PINN unified training script',
+            formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+        )
+        p.add_argument('--pde',              type=str,   default=pde)
+        p.add_argument('--model',            type=str,   default=model)
+        p.add_argument('--device',           type=str,   default=device)
+        p.add_argument('--seed',             type=int,   default=seed)
+        p.add_argument('--dtype_start',      type=str,   default=dtype_start,
+                       choices=['fp32', 'fp64'])
+        p.add_argument('--optim_start',      type=str,   default=optim_start,
+                       choices=['adam', 'lbfgs'])
+        p.add_argument('--dtype_switch',     type=str,   default=dtype_switch,
+                       choices=['fp32', 'fp64'])
+        p.add_argument('--optim_switch',     type=str,   default=optim_switch,
+                       choices=['adam', 'lbfgs'])
+        p.add_argument('--switch_epoch',     type=int,   default=switch_epoch)
+        p.add_argument('--total_epochs',     type=int,   default=total_epochs)
+        p.add_argument('--adam_lr',          type=float, default=adam_lr)
+        p.add_argument('--lbfgs_tol_grad',   type=float, default=lbfgs_tol_grad)
+        p.add_argument('--lbfgs_tol_change', type=float, default=lbfgs_tol_change)
+        p.add_argument('--out_dir',          type=str,   default=out_dir)
+        args = p.parse_args()
+    else:
+        # Running from Jupyter or direct Python call — use kwargs directly
+        import types
+        args = types.SimpleNamespace(
+            pde=pde, model=model, device=device, seed=seed,
+            dtype_start=dtype_start, optim_start=optim_start,
+            dtype_switch=dtype_switch, optim_switch=optim_switch,
+            switch_epoch=switch_epoch, total_epochs=total_epochs,
+            adam_lr=adam_lr, lbfgs_tol_grad=lbfgs_tol_grad,
+            lbfgs_tol_change=lbfgs_tol_change, out_dir=out_dir,
+        )
 
     # Fill defaults for switch args
     if args.dtype_switch is None:
@@ -138,11 +157,12 @@ def parse_args():
     if args.optim_switch is None:
         args.optim_switch = args.optim_start
 
-    # Condition string — used in filenames and CSV columns
+    # Build condition string
     is_switching = (
         args.switch_epoch is not None
         and args.switch_epoch < args.total_epochs
-        and (args.dtype_switch != args.dtype_start or args.optim_switch != args.optim_start)
+        and (args.dtype_switch != args.dtype_start
+             or args.optim_switch != args.optim_start)
     )
     if is_switching:
         args.condition = (
@@ -730,8 +750,8 @@ def save_plots(out_dir, args, loss_path, timing_path, grad_path, switch_epoch):
 # MAIN
 # ===========================================================================
 
-def main():
-    args = parse_args()
+def main(**kwargs):
+    args = parse_args(**kwargs)
 
     # Reproducibility
     np.random.seed(args.seed)
