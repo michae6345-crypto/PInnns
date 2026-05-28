@@ -598,7 +598,7 @@ def build_model(args, dtype, device):
         model.apply(init_weights)
     else:  # PINN (default), FLS, PINNMamba
         model = get_model(args).Model(
-            in_dim=2, hidden_dim=1024, out_dim=1, num_layer=6
+            in_dim=2, hidden_dim=256, out_dim=1, num_layer=4
         ).to(dtype).to(device)
         model.apply(init_weights)
 
