@@ -24,7 +24,7 @@ for pkg in ['tqdm', 'pandas', 'matplotlib', 'scipy']:
     try:
         __import__(pkg)
     except ImportError:
-        subprocess.run([sys.executable, '-m', 'pip', 'install', pkg, '-q'], check=False)
+        subprocess.run([sys.executable, '-m', 'pip', 'install', pkg, '-q', '--break-system-packages'], check=False)
 
 import os
 os.environ.setdefault('CUBLAS_WORKSPACE_CONFIG', ':4096:8')
@@ -68,16 +68,16 @@ configure_cuda()
 
 
 # ===========================================================================
-# PINN MODEL  (matches Xu et al. 2025 exactly: hidden=1024, layers=6)
+# PINN MODEL  (hidden=512, layers=4 — scaled for A10 GPU; note in paper methods)
 # ===========================================================================
 
 class PINN_Model(nn.Module):
     """
-    Fully-connected PINN — identical architecture to miniHuiHui/PINN_FP64.
-    Default: 6 hidden layers of width 1024 with Tanh activation.
+    Fully-connected PINN. hidden=512, layers=4 chosen for A10 GPU compute budget.
+    Xu et al. use 1024x6 on faster GPUs; we note this in the methods section.
     Input: (x, t)  →  Output: u scalar
     """
-    def __init__(self, in_dim=2, hidden_dim=1024, out_dim=1, num_layer=6):
+    def __init__(self, in_dim=2, hidden_dim=512, out_dim=1, num_layer=4):
         super().__init__()
         layers = [nn.Linear(in_dim, hidden_dim), nn.Tanh()]
         for _ in range(num_layer - 1):
@@ -92,7 +92,7 @@ class PINN_Model(nn.Module):
 
 def build_model(dtype, device):
     """Build and initialise the PINN. Xavier init matches baseline."""
-    model = PINN_Model(in_dim=2, hidden_dim=1024, out_dim=1, num_layer=6)
+    model = PINN_Model(in_dim=2, hidden_dim=512,  out_dim=1, num_layer=4)
 
     def init_weights(m):
         if isinstance(m, nn.Linear):
@@ -141,18 +141,16 @@ def build_reaction_pde(device, dtype):
     res, b_left, b_right, b_upper, b_lower = get_data([0, 2*np.pi], [0, 1], 101, 101)
     res_test = res.copy()
 
-    T = dict(
-        x_res   = _to_tensor(res)[:, 0:1],
-        t_res   = _to_tensor(res)[:, 1:2],
-        x_left  = _to_tensor(b_left)[:, 0:1],
-        t_left  = _to_tensor(b_left)[:, 1:2],
-        x_upper = _to_tensor(b_upper)[:, 0:1],
-        t_upper = _to_tensor(b_upper)[:, 1:2],
-        x_lower = _to_tensor(b_lower)[:, 0:1],
-        t_lower = _to_tensor(b_lower)[:, 1:2],
-    )
-    # curry dtype/device into helper
-    T = {k: _to_tensor(v.cpu().numpy(), dtype, device) for k, v in T.items()}
+    T = {
+        'x_res':   _to_tensor(res[:,0:1],     dtype, device),
+        't_res':   _to_tensor(res[:,1:2],     dtype, device),
+        'x_left':  _to_tensor(b_left[:,0:1],  dtype, device),
+        't_left':  _to_tensor(b_left[:,1:2],  dtype, device),
+        'x_upper': _to_tensor(b_upper[:,0:1], dtype, device),
+        't_upper': _to_tensor(b_upper[:,1:2], dtype, device),
+        'x_lower': _to_tensor(b_lower[:,0:1], dtype, device),
+        't_lower': _to_tensor(b_lower[:,1:2], dtype, device),
+    }
 
     def loss_fn(model, T):
         pred_res   = model(T['x_res'],   T['t_res'])
