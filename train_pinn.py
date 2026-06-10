@@ -92,7 +92,7 @@ class PINN_Model(nn.Module):
 
 def build_model(dtype, device):
     """Build and initialise the PINN. Xavier init matches baseline."""
-    model = PINN_Model(in_dim=2, hidden_dim=512,  out_dim=1, num_layer=4)
+    model = PINN_Model(in_dim=2, hidden_dim=1024, out_dim=1, num_layer=6)
 
     def init_weights(m):
         if isinstance(m, nn.Linear):
