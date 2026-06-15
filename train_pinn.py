@@ -83,7 +83,7 @@ configure_cuda()
 # ---------------------------------------------------------------------------
 
 class PINN_Model(nn.Module):
-    def __init__(self, in_dim=2, hidden_dim=1024, out_dim=1, num_layer=6):
+    def __init__(self, in_dim=2, hidden_dim=512, out_dim=1, num_layer=4):
         super().__init__()
         layers = [nn.Linear(in_dim, hidden_dim), nn.Tanh()]
         for _ in range(num_layer - 1):
