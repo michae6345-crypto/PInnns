@@ -14,15 +14,29 @@ USAGE (Jupyter):
     tp.run_all(pdes=['wave', 'ac'])
     tp.run_all(pdes=['convection'])   # run convection separately — it's long
 
-7 CONDITIONS per PDE:
+7 CONDITIONS per PDE (reaction, wave, ac, convection):
     Static:    fp64lbfgs, fp64adam, fp32lbfgs, fp32adam
     Switching: fp32adam->fp64adam, fp32lbfgs->fp64lbfgs, fp32adam->fp64lbfgs
 
-EPOCH BUDGET (matches Xu et al. miniHuiHui/PINN_FP64 code exactly):
+BURGERS (targeted stiffness-generalization test -- NOT run as all 7):
+    Formulation: Raissi, Perdikaris & Karniadakis 2019 (J. Comput. Phys.
+    378:686-707) -- standard PINN benchmark instance, nu=0.01/pi, Dirichlet BC.
+    No Xu et al. precedent for epoch budget -- ours is a tentative default,
+    confirm via sanity run before committing the full subset. Recommended
+    subset (NOT the full 7 -- see conversation with mentor for rationale):
+        python train_pinn.py --pde burgers --dtype_start fp64 --optim_start lbfgs
+        python train_pinn.py --pde burgers --dtype_start fp32 --optim_start lbfgs
+        python train_pinn.py --pde burgers --dtype_start fp32 --optim_start lbfgs \\
+            --dtype_switch fp64 --optim_switch lbfgs --switch_epoch 5000
+    Requires burgers_shock.mat (Raissi et al. supplementary data,
+    maziarraissi/PINNs repo) in the working directory for L2 eval.
+
+EPOCH BUDGET (matches Xu et al. miniHuiHui/PINN_FP64 exactly, except burgers):
     reaction:   2,000   switch @ 1,000
     wave:      10,000   switch @ 5,000
     ac:        10,000   switch @ 5,000
     convection: 50,000  switch @ 25,000  <- long run, plan accordingly
+    burgers:   10,000   switch @ 5,000   <- TENTATIVE, no source precedent
 """
 
 import subprocess, sys
@@ -48,11 +62,14 @@ from torch.optim import LBFGS, Adam
 from tqdm import tqdm
 
 # Per-PDE epoch budgets — matches Xu et al. miniHuiHui/PINN_FP64 exactly
+# NOTE: 'burgers' has NO Xu et al. precedent. Budget below is our own choice,
+# not inherited — disclose this explicitly in the paper (unlike the other 4).
 PDE_EPOCHS = {
     'reaction':   2000,
     'wave':       10000,
     'ac':         10000,
     'convection': 50000,
+    'burgers':    10000,   # tentative — confirm via sanity-check run before committing
 }
 PDE_SWITCH = {k: v // 2 for k, v in PDE_EPOCHS.items()}
 
@@ -312,11 +329,122 @@ def build_ac_pde(device, dtype, mat_path='allen_cahn.mat', **_):
     return T, loss_fn, exact_fn, res.copy()
 
 
+def build_burgers_pde(device, dtype, mat_path='burgers_shock.mat', **_):
+    """
+    Viscous Burgers' equation (Raissi, Perdikaris & Karniadakis 2019,
+    J. Comput. Phys. 378:686-707 — the standard PINN benchmark instance).
+
+        u_t + u*u_x - nu*u_xx = 0,   nu = 0.01/pi
+        u(x,0) = -sin(pi*x)
+        u(-1,t) = u(1,t) = 0          <-- DIRICHLET, not periodic (differs
+                                           from reaction/wave/convection/AC)
+        [-1,1]x[0,1], 101x101.
+
+    Loss weighting: unweighted l_res + l_bc + l_ic, matching Raissi et al.
+    and matching the convention already used for reaction/wave/convection
+    (only AC departs from this, with its 10:1:1:100 weighting).
+
+    .mat reference solution: verify key names before trusting them.
+    Raissi's supplementary file (maziarraissi/PINNs repo) commonly uses
+    't' / 'x' / 'usol', NOT the 'tt'/'uu' keys used by allen_cahn.mat —
+    do not assume the AC convention carries over here (that exact mistake
+    cost a transpose bug on AC; this loader checks key names explicitly
+    and fails loudly rather than silently mis-loading).
+    """
+    nu = 0.01 / np.pi
+    res, b_left, _, b_upper, b_lower = get_data([-1, 1], [0, 1], 101, 101)
+    T = _make_T(res, b_left, b_upper, b_lower, dtype, device)
+
+    def loss_fn(model, T):
+        u    = model(T['x_res'], T['t_res'])
+        u_t  = torch.autograd.grad(u, T['t_res'],
+                   grad_outputs=torch.ones_like(u),
+                   retain_graph=True, create_graph=True)[0]
+        u_x  = torch.autograd.grad(u, T['x_res'],
+                   grad_outputs=torch.ones_like(u),
+                   retain_graph=True, create_graph=True)[0]
+        u_xx = torch.autograd.grad(u_x, T['x_res'],
+                   grad_outputs=torch.ones_like(u_x),
+                   retain_graph=True, create_graph=True)[0]
+        l_res = torch.mean((u_t + u*u_x - nu*u_xx)**2)
+        # Dirichlet BC: u=0 at both walls (NOT periodic — no upper==lower match)
+        l_bc  = (torch.mean(model(T['x_upper'], T['t_upper'])**2) +
+                 torch.mean(model(T['x_lower'], T['t_lower'])**2))
+        u_ic  = model(T['x_left'], T['t_left'])
+        l_ic  = torch.mean((u_ic[:,0] +
+                             torch.sin(np.pi * T['x_left'][:,0]))**2)
+        return l_res, l_bc, l_ic
+
+    exact_fn = None
+    try:
+        import scipy.io
+        data = scipy.io.loadmat(mat_path)
+        available_keys = [k for k in data.keys() if not k.startswith('__')]
+        print(f'[Burgers] {mat_path} keys found: {available_keys}')
+
+        # Try the Raissi-convention keys first; fall back to AC-style keys
+        # ONLY if Raissi keys are absent, and print which path was taken —
+        # never assume silently.
+        if 't' in data and 'x' in data and 'usol' in data:
+            t_arr = data['t'].flatten()
+            x_arr = data['x'].flatten()
+            usol  = np.real(data['usol'])
+            print('[Burgers] Using Raissi-convention keys: t / x / usol')
+        elif 'tt' in data and 'x' in data and 'uu' in data:
+            t_arr = data['tt'].flatten()
+            x_arr = data['x'].flatten()
+            usol  = np.real(data['uu'])
+            print('[Burgers] Using AC-convention keys: tt / x / uu '
+                  '(unexpected for this file — double-check source)')
+        else:
+            raise KeyError(
+                f'No recognized key combination in {available_keys}. '
+                f'Inspect the .mat file manually before proceeding — '
+                f'do not guess the shape/orientation.'
+            )
+
+        # Verify orientation against expected grid size rather than assuming
+        # (x,t) vs (t,x) — the AC loader needed a transpose fix for exactly
+        # this reason.
+        if usol.shape == (len(t_arr), len(x_arr)):
+            print(f'[Burgers] usol shape {usol.shape} is (t,x) -- transposing to (x,t)')
+            usol = usol.T
+        elif usol.shape == (len(x_arr), len(t_arr)):
+            print(f'[Burgers] usol shape {usol.shape} already (x,t) -- no transpose needed')
+        else:
+            raise ValueError(
+                f'usol shape {usol.shape} matches neither (t,x)=({len(t_arr)},{len(x_arr)}) '
+                f'nor (x,t)=({len(x_arr)},{len(t_arr)}) -- inspect manually.'
+            )
+
+        def exact_fn(xy):
+            from scipy.interpolate import RegularGridInterpolator
+            interp = RegularGridInterpolator((x_arr, t_arr), usol,
+                                             method='linear', bounds_error=False,
+                                             fill_value=None)
+            return interp(xy).reshape(101, 101)
+    except Exception as e:
+        print(f'[Burgers] Could not load {mat_path}: {e}')
+        print('[Burgers] L2 eval = nan. Training unaffected.')
+
+    return T, loss_fn, exact_fn, res.copy()
+
+
 PDE_BUILDERS = {
     'reaction':   build_reaction_pde,
     'wave':       build_wave_pde,
     'convection': build_convection_pde,
     'ac':         build_ac_pde,
+    'burgers':    build_burgers_pde,
+}
+
+# Per-PDE default reference-solution files. mat_path is only ever an
+# explicit OVERRIDE when passed by the caller — it must never silently
+# fall back to allen_cahn.mat for a different PDE (that mismatch would
+# load the wrong ground truth without raising an error).
+PDE_MAT_DEFAULTS = {
+    'ac':       'allen_cahn.mat',
+    'burgers':  'burgers_shock.mat',
 }
 
 
@@ -559,8 +687,15 @@ def main(**kwargs):
     run_dir = os.path.join(args.out_dir, args.pde, args.condition)
     paths   = open_logs(run_dir, args.condition, args.pde)
 
+    # Resolve mat_path per-PDE if the caller left it at the generic default
+    # rather than explicitly overriding it -- prevents e.g. burgers runs
+    # silently trying to load allen_cahn.mat.
+    resolved_mat_path = args.mat_path
+    if resolved_mat_path == 'allen_cahn.mat' and args.pde in PDE_MAT_DEFAULTS:
+        resolved_mat_path = PDE_MAT_DEFAULTS[args.pde]
+
     tensors, loss_fn, exact_fn, res_test = PDE_BUILDERS[args.pde](
-        device, dtype, mat_path=args.mat_path)
+        device, dtype, mat_path=resolved_mat_path)
     model = build_model(dtype, device)
     print(f'Parameters: {sum(p.numel() for p in model.parameters()):,}')
 
