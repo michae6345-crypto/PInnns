@@ -800,13 +800,19 @@ def run_all(pdes=None, conditions=None, out_dir='./results',
     pdes: list of PDEs to run.
           ['wave', 'ac']          -- run wave and AC
           ['convection']          -- run only convection (long!)
-          None                    -- all 4
+          None                    -- all 4 main PDEs (reaction/wave/ac/convection)
+
+    NOTE: 'burgers' is NOT included in the None default -- it runs a targeted
+    3-condition subset only, not all 7. Call it explicitly with a conditions=
+    override (see Cell 8 in run_experiments.ipynb for the exact invocation).
 
     Epoch counts and switch epochs are set automatically per PDE.
     Already-completed runs are skipped (skip_existing=True).
+    mat_path is resolved per-PDE automatically -- burgers uses burgers_shock.mat,
+    ac uses allen_cahn.mat; you do not need to pass mat_path manually.
 
     Example:
-        run_all(pdes=['wave', 'ac'], mat_path='./allen_cahn.mat')
+        run_all(pdes=['wave', 'ac'])
         run_all(pdes=['convection'])   # do this separately, it takes hours
     """
     if pdes is None:
@@ -823,6 +829,12 @@ def run_all(pdes=None, conditions=None, out_dir='./results',
         print(f'\n{"="*55}')
         print(f'  PDE: {pde}  |  {ep} epochs  |  switch @ {sw}')
         print(f'{"="*55}')
+
+        # Resolve mat_path per-PDE so burgers never silently
+        # inherits allen_cahn.mat as the default.
+        resolved_mat = mat_path
+        if resolved_mat == 'allen_cahn.mat' and pde in PDE_MAT_DEFAULTS:
+            resolved_mat = PDE_MAT_DEFAULTS[pde]
 
         for cond in conditions:
             ds, os_ = cond['dtype_start'], cond['optim_start']
@@ -845,7 +857,7 @@ def run_all(pdes=None, conditions=None, out_dir='./results',
 
             print(f'\n[{done}/{total}] {pde} / {label}')
             kwargs = dict(pde=pde, total_epochs=ep, out_dir=out_dir,
-                          mat_path=mat_path, **cond, **shared_kwargs)
+                          mat_path=resolved_mat, **cond, **shared_kwargs)
             if is_sw:
                 kwargs['switch_epoch'] = sw
             main(**kwargs)
