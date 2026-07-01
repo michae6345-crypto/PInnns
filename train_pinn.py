@@ -800,12 +800,10 @@ def run_all(pdes=None, conditions=None, out_dir='./results',
     pdes: list of PDEs to run.
           ['wave', 'ac']          -- run wave and AC
           ['convection']          -- run only convection (long!)
-          None                    -- all 4 main PDEs (reaction/wave/ac/convection)
+          ['burgers']             -- run burgers (~4-6 hrs, all 7 conditions)
+          None                    -- all 5 PDEs (reaction/wave/ac/convection/burgers)
 
-    NOTE: 'burgers' is NOT included in the None default -- it runs a targeted
-    3-condition subset only, not all 7. Call it explicitly with a conditions=
-    override (see Cell 8 in run_experiments.ipynb for the exact invocation).
-
+    Burgers' runs all 7 conditions the same as the other PDEs.
     Epoch counts and switch epochs are set automatically per PDE.
     Already-completed runs are skipped (skip_existing=True).
     mat_path is resolved per-PDE automatically -- burgers uses burgers_shock.mat,
@@ -814,9 +812,10 @@ def run_all(pdes=None, conditions=None, out_dir='./results',
     Example:
         run_all(pdes=['wave', 'ac'])
         run_all(pdes=['convection'])   # do this separately, it takes hours
+        run_all(pdes=['burgers'])      # all 7 conditions, ~4-6 hrs
     """
     if pdes is None:
-        pdes = ['reaction', 'wave', 'convection', 'ac']
+        pdes = ['reaction', 'wave', 'convection', 'ac', 'burgers']
     if conditions is None:
         conditions = ALL_CONDITIONS
 
