@@ -5,8 +5,8 @@ This repository accompanies the paper:
 > **Training Physics-Informed Neural Networks (PINNs) often involves trade-offs between numerical precision and computational efficiency.**  
 > We study the effects of switching both optimizer type and floating-point precision mid-training across 7 experimental conditions and multiple benchmark PDEs.
 
-Mentor: Shivank  
-Authors: Michael, Chloe, Trisha  
+ 
+Authors: Michael, Trisha  
 Baseline: [FP64 Is All You Need](https://github.com/XXX) (Xu et al., 2025)
 
 ---
