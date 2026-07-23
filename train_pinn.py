@@ -65,11 +65,12 @@ from tqdm import tqdm
 # NOTE: 'burgers' has NO Xu et al. precedent. Budget below is our own choice,
 # not inherited — disclose this explicitly in the paper (unlike the other 4).
 PDE_EPOCHS = {
-    'reaction':   2000,
-    'wave':       10000,
-    'ac':         10000,
-    'convection': 50000,
-    'burgers':    10000,   # tentative — confirm via sanity-check run before committing
+    'reaction':    2000,
+    'wave':        10000,
+    'ac':          10000,
+    'ac_weighted': 10000,  # same budget as ac — Xu et al. exact weighting (10*res + bc + 100*ic)
+    'convection':  50000,
+    'burgers':     10000,  # tentative — confirm via sanity-check run before committing
 }
 PDE_SWITCH = {k: v // 2 for k, v in PDE_EPOCHS.items()}
 
@@ -311,9 +312,9 @@ def build_ac_pde(device, dtype, mat_path='allen_cahn.mat', **_):
     try:
         import scipy.io
         data  = scipy.io.loadmat(mat_path)
-        t_arr = data['tt'].flatten()
+        t_arr = data['t'].flatten()
         x_arr = data['x'].flatten()
-        usol  = np.real(data['uu'])
+        usol  = np.real(data['usol']).T  # file is (t,x) -> transpose to (x,t)
         print(f'[AC] Loaded {mat_path}: x={len(x_arr)}, t={len(t_arr)}')
 
         def exact_fn(xy):
@@ -325,6 +326,70 @@ def build_ac_pde(device, dtype, mat_path='allen_cahn.mat', **_):
     except Exception as e:
         print(f'[AC] Could not load {mat_path}: {e}')
         print('[AC] L2 eval = nan. Training unaffected.')
+
+    return T, loss_fn, exact_fn, res.copy()
+
+
+def build_ac_weighted_pde(device, dtype, mat_path='allen_cahn.mat', **_):
+    """
+    Allen-Cahn with Xu et al. exact loss weighting:
+        loss = 10*l_res + l_bc + 100*l_ic
+    Source: miniHuiHui/PINN_FP64/ac_fp64.py line:
+        loss = 10 * loss_res + loss_bc_1 + loss_bc_2 + 100 * loss_ic
+
+    Everything else (PDE, IC, BC, grid, epochs) is identical to build_ac_pde.
+    Results saved under pde='ac_weighted' so they never overwrite ac (1:1:1) runs.
+    """
+    res, b_left, _, b_upper, b_lower = get_data([-1, 1], [0, 1], 101, 101)
+    T = _make_T(res, b_left, b_upper, b_lower, dtype, device)
+    d = 0.0001
+
+    def loss_fn(model, T):
+        u    = model(T['x_res'], T['t_res'])
+        u_t  = torch.autograd.grad(u, T['t_res'],
+                   grad_outputs=torch.ones_like(u),
+                   retain_graph=True, create_graph=True)[0]
+        u_x  = torch.autograd.grad(u, T['x_res'],
+                   grad_outputs=torch.ones_like(u),
+                   retain_graph=True, create_graph=True)[0]
+        u_xx = torch.autograd.grad(u_x, T['x_res'],
+                   grad_outputs=torch.ones_like(u_x),
+                   retain_graph=True, create_graph=True)[0]
+        l_res = torch.mean((u_t - d*u_xx + 5*(u**3 - u))**2)
+        u_up  = model(T['x_upper'], T['t_upper'])
+        u_lo  = model(T['x_lower'], T['t_lower'])
+        ux_up = torch.autograd.grad(u_up, T['x_upper'],
+                    grad_outputs=torch.ones_like(u_up),
+                    retain_graph=True, create_graph=True)[0]
+        ux_lo = torch.autograd.grad(u_lo, T['x_lower'],
+                    grad_outputs=torch.ones_like(u_lo),
+                    retain_graph=True, create_graph=True)[0]
+        l_bc  = (torch.mean((u_up - u_lo)**2) + torch.mean((ux_up - ux_lo)**2))
+        u_ic  = model(T['x_left'], T['t_left'])
+        l_ic  = torch.mean((u_ic[:,0] -
+                             (T['x_left'][:,0]**2) *
+                             torch.cos(np.pi * T['x_left'][:,0]))**2)
+        # Xu et al. exact weighting: 10*res + bc_val + bc_deriv + 100*ic
+        return 10*l_res, l_bc, 100*l_ic
+
+    exact_fn = None
+    try:
+        import scipy.io
+        data  = scipy.io.loadmat(mat_path)
+        t_arr = data['t'].flatten()
+        x_arr = data['x'].flatten()
+        usol  = np.real(data['usol']).T  # (t,x) -> (x,t)
+        print(f'[AC-weighted] Loaded {mat_path}: x={len(x_arr)}, t={len(t_arr)}')
+
+        def exact_fn(xy):
+            from scipy.interpolate import RegularGridInterpolator
+            interp = RegularGridInterpolator((x_arr, t_arr), usol,
+                                             method='linear', bounds_error=False,
+                                             fill_value=None)
+            return interp(xy).reshape(101, 101)
+    except Exception as e:
+        print(f'[AC-weighted] Could not load {mat_path}: {e}')
+        print('[AC-weighted] L2 eval = nan. Training unaffected.')
 
     return T, loss_fn, exact_fn, res.copy()
 
@@ -434,8 +499,9 @@ PDE_BUILDERS = {
     'reaction':   build_reaction_pde,
     'wave':       build_wave_pde,
     'convection': build_convection_pde,
-    'ac':         build_ac_pde,
-    'burgers':    build_burgers_pde,
+    'ac':          build_ac_pde,
+    'ac_weighted': build_ac_weighted_pde,
+    'burgers':     build_burgers_pde,
 }
 
 # Per-PDE default reference-solution files. mat_path is only ever an
@@ -443,8 +509,9 @@ PDE_BUILDERS = {
 # fall back to allen_cahn.mat for a different PDE (that mismatch would
 # load the wrong ground truth without raising an error).
 PDE_MAT_DEFAULTS = {
-    'ac':       'allen_cahn.mat',
-    'burgers':  'burgers_shock.mat',
+    'ac':          'allen_cahn.mat',
+    'ac_weighted': 'allen_cahn.mat',
+    'burgers':     'burgers_shock.mat',
 }
 
 
