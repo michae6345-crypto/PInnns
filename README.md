@@ -6,7 +6,7 @@ This repository accompanies the paper:
 > We study the effects of switching both optimizer type and floating-point precision mid-training across 7 experimental conditions and multiple benchmark PDEs.
 
  
-Authors: Michael, Trisha  
+Authors: Michael, Chloe, Trisha  
 Baseline: [FP64 Is All You Need](https://github.com/XXX) (Xu et al., 2025)
 
 ---
