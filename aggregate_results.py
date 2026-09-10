@@ -1,15 +1,13 @@
 """
-aggregate_results.py  —  TMC-PINN Results Aggregator
-=====================================================
-Reads all eval_log.csv and loss_log.csv files produced by train_pinn.py
-and generates:
-  1. A paper-ready summary table (LaTeX + CSV)
-  2. Per-PDE loss curve comparison plots
-  3. Per-PDE timing comparison bar chart
-  4. GPU memory comparison bar chart
+Collect the per-run CSVs written by train_pinn.py into the tables and figures
+used in the paper: a summary table of relative L2 error and wall time (as both
+CSV and LaTeX), per-PDE loss curves with every condition overlaid, and bar
+charts of final error and training time.
 
-Usage:
     python aggregate_results.py --results_dir ./results --out_dir ./paper_figures
+
+Conditions or PDEs with no results are rendered as em-dashes rather than
+dropped, so a partial sweep still produces a readable table.
 """
 
 import os
@@ -20,9 +18,7 @@ import pandas as pd
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
-import matplotlib.ticker as ticker
 
-# ---- display order and labels ----
 CONDITION_ORDER = [
     'fp64lbfgs',
     'fp64adam',
@@ -31,6 +27,7 @@ CONDITION_ORDER = [
     'fp32adam_to_fp64adam',
     'fp32lbfgs_to_fp64lbfgs',
     'fp32adam_to_fp64lbfgs',
+    'fp64adam_to_fp64lbfgs',
 ]
 
 CONDITION_LABELS = {
@@ -41,11 +38,13 @@ CONDITION_LABELS = {
     'fp32adam_to_fp64adam':   'FP32 Adam → FP64 Adam',
     'fp32lbfgs_to_fp64lbfgs': 'FP32 L-BFGS → FP64 L-BFGS',
     'fp32adam_to_fp64lbfgs':  'FP32 Adam → FP64 L-BFGS',
+    'fp64adam_to_fp64lbfgs':  'FP64 Adam → FP64 L-BFGS',
 }
 
-PDE_ORDER  = ['reaction', 'wave', 'convection', 'ac']
+PDE_ORDER  = ['reaction', 'wave', 'convection', 'ac', 'ac_weighted', 'burgers']
 PDE_LABELS = {'reaction': 'Reaction', 'wave': 'Wave',
-              'convection': 'Convection', 'ac': 'Allen-Cahn'}
+              'convection': 'Convection', 'ac': 'Allen-Cahn',
+              'ac_weighted': 'Allen-Cahn (weighted)', 'burgers': "Burgers'"}
 
 COLORS = {
     'fp64lbfgs':              '#1f4e79',   # dark blue
@@ -54,7 +53,8 @@ COLORS = {
     'fp32adam':               '#bfbfbf',   # light gray
     'fp32adam_to_fp64adam':   '#7030a0',   # purple
     'fp32lbfgs_to_fp64lbfgs': '#833c00',   # brown
-    'fp32adam_to_fp64lbfgs':  '#c00000',   # red (key condition)
+    'fp32adam_to_fp64lbfgs':  '#c00000',   # red
+    'fp64adam_to_fp64lbfgs':  '#e07b39',   # orange
 }
 
 
@@ -88,7 +88,7 @@ def load_loss_logs(results_dir):
 
 
 # ===========================================================================
-# TABLE 1 — Summary (L2 error + timing)
+# Summary table — relative L2 error and wall time
 # ===========================================================================
 
 def build_summary_table(eval_df, out_dir):
@@ -96,10 +96,9 @@ def build_summary_table(eval_df, out_dir):
         print('[TABLE] No eval data found.')
         return
 
-    # Deduplicate: keep last run if multiple
+    # A condition may have been re-run; the last row wins.
     eval_df = eval_df.drop_duplicates(subset=['condition', 'pde'], keep='last')
 
-    # Pivot: rows = condition, columns = PDE, values = (L2_rel, total_time_s)
     rows = []
     for cond in CONDITION_ORDER:
         row = {'Condition': CONDITION_LABELS.get(cond, cond)}
@@ -115,43 +114,39 @@ def build_summary_table(eval_df, out_dir):
 
     df_table = pd.DataFrame(rows)
 
-    # Save CSV
     csv_path = os.path.join(out_dir, 'table1_summary.csv')
     df_table.to_csv(csv_path, index=False)
     print(f'[TABLE] Summary CSV: {csv_path}')
 
-    # Save LaTeX
     latex_path = os.path.join(out_dir, 'table1_summary.tex')
     with open(latex_path, 'w') as f:
         n_pdes = len(PDE_ORDER)
         f.write('\\begin{table}[t]\n')
         f.write('\\centering\n')
-        f.write('\\caption{Relative L2 error and total training time (seconds) for all '
-                'conditions across four benchmark PDEs. '
-                'Switching conditions use a fixed switch epoch of 1000 out of 2000 total epochs.}\n')
+        f.write('\\caption{Relative L2 error and total training time (seconds) for '
+                'every condition and benchmark PDE. Switching conditions switch at '
+                'the halfway point of each PDE\'s epoch budget.}\n')
         f.write('\\label{tab:main_results}\n')
         f.write('\\resizebox{\\textwidth}{!}{%\n')
         col_spec = 'l' + ('cc' * n_pdes)
         f.write(f'\\begin{{tabular}}{{{col_spec}}}\n')
         f.write('\\toprule\n')
-        # Header row 1: PDE names spanning 2 cols each
         pde_headers = ' & '.join(
             f'\\multicolumn{{2}}{{c}}{{{PDE_LABELS[p]}}}' for p in PDE_ORDER)
         f.write(f'Condition & {pde_headers} \\\\\n')
-        # Header row 2: L2 / Time for each PDE
         sub_headers = ' & '.join(['L2 Rel. & Time (s)'] * n_pdes)
         f.write(f'\\cmidrule(lr){{2-{1+2*n_pdes}}}')
         f.write(f' & {sub_headers} \\\\\n')
         f.write('\\midrule\n')
-        # Static baselines
         f.write('\\multicolumn{' + str(1 + 2 * n_pdes) + '}{l}'
                 '{\\textit{Static baselines}} \\\\\n')
-        for i, cond in enumerate(CONDITION_ORDER):
-            if 'to' in cond:
-                if i == 4:  # first switching condition
-                    f.write('\\midrule\n')
-                    f.write('\\multicolumn{' + str(1 + 2 * n_pdes) + '}{l}'
-                            '{\\textit{Switching conditions}} \\\\\n')
+        switch_header_written = False
+        for cond in CONDITION_ORDER:
+            if '_to_' in cond and not switch_header_written:
+                switch_header_written = True
+                f.write('\\midrule\n')
+                f.write('\\multicolumn{' + str(1 + 2 * n_pdes) + '}{l}'
+                        '{\\textit{Switching conditions}} \\\\\n')
             label = CONDITION_LABELS.get(cond, cond)
             cells = []
             for pde in PDE_ORDER:
@@ -170,7 +165,7 @@ def build_summary_table(eval_df, out_dir):
 
 
 # ===========================================================================
-# FIGURE 1 — Loss curves per PDE, all conditions overlaid
+# Loss curves, one figure per PDE with every condition overlaid
 # ===========================================================================
 
 def plot_loss_curves(loss_df, eval_df, out_dir):
@@ -191,15 +186,14 @@ def plot_loss_curves(loss_df, eval_df, out_dir):
                 continue
 
             color = COLORS.get(cond, 'black')
-            lw = 2.5 if 'to' in cond else 1.5
-            ls = '-'
+            # Switching conditions are the point of the paper, so draw them heavier.
+            lw = 2.5 if '_to_' in cond else 1.5
 
             ax.semilogy(cdf['epoch'], cdf['total_loss'],
-                        color=color, lw=lw, ls=ls,
+                        color=color, lw=lw,
                         label=CONDITION_LABELS.get(cond, cond))
 
-            # Draw switch-epoch vertical line for switching conditions
-            if 'to' in cond:
+            if '_to_' in cond:
                 sw_rows = eval_df[
                     (eval_df['condition'] == cond) & (eval_df['pde'] == pde)]
                 if not sw_rows.empty:
@@ -220,7 +214,7 @@ def plot_loss_curves(loss_df, eval_df, out_dir):
 
 
 # ===========================================================================
-# FIGURE 2 — L2 error bar chart per PDE
+# Bar charts of final error and training time
 # ===========================================================================
 
 def plot_l2_bars(eval_df, out_dir):
@@ -230,7 +224,8 @@ def plot_l2_bars(eval_df, out_dir):
     eval_df = eval_df.drop_duplicates(subset=['condition', 'pde'], keep='last')
     present_conds = [c for c in CONDITION_ORDER if c in eval_df['condition'].values]
 
-    fig, axes = plt.subplots(1, len(PDE_ORDER), figsize=(14, 4), sharey=False)
+    fig, axes = plt.subplots(1, len(PDE_ORDER),
+                             figsize=(2.6 * len(PDE_ORDER), 4), sharey=False)
     if len(PDE_ORDER) == 1:
         axes = [axes]
 
@@ -247,7 +242,7 @@ def plot_l2_bars(eval_df, out_dir):
             continue
 
         x = np.arange(len(vals))
-        bars = ax.bar(x, vals, color=colors, edgecolor='white', linewidth=0.5)
+        ax.bar(x, vals, color=colors, edgecolor='white', linewidth=0.5)
         ax.set_yscale('log')
         ax.set_xticks(x)
         ax.set_xticklabels(labels, rotation=45, ha='right', fontsize=7)
@@ -263,10 +258,6 @@ def plot_l2_bars(eval_df, out_dir):
     print(f'[PLOT] L2 bar chart: {path}')
 
 
-# ===========================================================================
-# FIGURE 3 — Training time bar chart
-# ===========================================================================
-
 def plot_timing_bars(eval_df, out_dir):
     if eval_df.empty:
         return
@@ -274,7 +265,8 @@ def plot_timing_bars(eval_df, out_dir):
     eval_df = eval_df.drop_duplicates(subset=['condition', 'pde'], keep='last')
     present_conds = [c for c in CONDITION_ORDER if c in eval_df['condition'].values]
 
-    fig, axes = plt.subplots(1, len(PDE_ORDER), figsize=(14, 4), sharey=False)
+    fig, axes = plt.subplots(1, len(PDE_ORDER),
+                             figsize=(2.6 * len(PDE_ORDER), 4), sharey=False)
     if len(PDE_ORDER) == 1:
         axes = [axes]
 
@@ -305,10 +297,6 @@ def plot_timing_bars(eval_df, out_dir):
     plt.close(fig)
     print(f'[PLOT] Timing bar chart: {path}')
 
-
-# ===========================================================================
-# MAIN
-# ===========================================================================
 
 def main():
     ap = argparse.ArgumentParser()

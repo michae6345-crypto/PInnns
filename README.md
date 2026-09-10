@@ -1,125 +1,72 @@
-# TMC-PINN: Dtype and Optimizer Switching in Physics-Informed Neural Networks
+# Precision and optimizer switching in physics-informed neural networks
 
-This repository accompanies the paper:
+Training a PINN in FP64 buys accuracy but costs time and memory; training in
+FP32 is cheap but stalls at a much higher error floor. This repository holds the
+code for a study of what happens if you do not have to choose — start a run in
+FP32, then switch precision, optimizer, or both partway through, and see where
+the resulting error and wall time land relative to the static baselines.
 
-> **Training Physics-Informed Neural Networks (PINNs) often involves trade-offs between numerical precision and computational efficiency.**  
-> We study the effects of switching both optimizer type and floating-point precision mid-training across 7 experimental conditions and multiple benchmark PDEs.
+Seven conditions are compared per PDE:
 
- 
-Authors: Michael, Chloe, Trisha  
-Baseline: [FP64 Is All You Need](https://github.com/XXX) (Xu et al., 2025)
+| | Phase 1 | Phase 2 |
+|---|---|---|
+| **Static baselines** | | |
+| `fp64lbfgs` | FP64 L-BFGS | — |
+| `fp64adam` | FP64 Adam | — |
+| `fp32lbfgs` | FP32 L-BFGS | — |
+| `fp32adam` | FP32 Adam | — |
+| **Switching** | | |
+| `fp32adam_to_fp64adam` | FP32 Adam | FP64 Adam |
+| `fp32lbfgs_to_fp64lbfgs` | FP32 L-BFGS | FP64 L-BFGS |
+| `fp32adam_to_fp64lbfgs` | FP32 Adam | FP64 L-BFGS |
 
----
+An eighth condition, `fp64adam_to_fp64lbfgs`, isolates the optimizer switch by
+holding precision at FP64 throughout. It lives in its own notebook.
 
-## Repository Structure
-
-```
-tmc-pinn/
-├── train_pinn.py          # unified training script — all 7 conditions
-├── run_all.sh             # launches all experiments
-├── aggregate_results.py   # builds paper tables and figures from logs
-├── util.py                # data generation utilities (from baseline)
-├── model_dict.py          # model registry (from baseline)
-├── allen_cahn.mat         # Allen-Cahn reference data (from baseline)
-└── results/               # created automatically on first run
-    └── <pde>/
-        └── <condition>/
-            ├── *_loss.csv
-            ├── *_timing.csv
-            ├── *_grad.csv
-            ├── *_eval.csv
-            ├── *_switch.csv
-            ├── *_loss_curve.pdf
-            ├── *_timing_curve.pdf
-            ├── *_grad_curve.pdf
-            ├── *_model.pt
-            └── *_config.json
-```
+The static baselines and the epoch budgets follow Xu et al., *FP64 Is All You
+Need* (2025), whose reference implementation is at `miniHuiHui/PINN_FP64`.
 
 ---
+
+## Layout
+
+```
+train_pinn.py                                  training script, all conditions
+aggregate_results.py                           builds the paper tables and figures
+run_experiments.ipynb                          all seven conditions, per PDE
+run_experiments_fp64adam_to_fp64lbfgs.ipynb    the FP64 optimizer-switch ablation
+util.py, model_dict.py, models/                inherited from the baseline repo
+allen_cahn.mat, burgers_shock.mat              reference solutions for L2 evaluation
+results/                                       created on first run
+```
+
+Each run writes to `results/<pde>/<condition>/` — five CSVs (loss, timing,
+gradient norm, final evaluation, switch event), three PDF curves, the model
+weights, and a JSON config recording every argument used.
 
 ## Setup
 
-### Requirements
-
 ```bash
 pip install torch numpy matplotlib tqdm pandas scipy
 ```
 
-Python 3.9+ and PyTorch 2.0+ recommended. For GPU runs (strongly recommended for L-BFGS), CUDA 11.8+.
+Python 3.9+ and PyTorch 2.0+. A GPU is strongly recommended: L-BFGS evaluates
+its closure several times per step under the strong Wolfe line search, so an
+L-BFGS run takes roughly 3-10x as long as an Adam run at the same epoch count.
 
-### Clone and install
+## Running
 
-```bash
-git clone https://github.com/chlorwu/tmc-pinn.git
-cd tmc-pinn
-pip install torch numpy matplotlib tqdm pandas scipy
-```
-
-`util.py` and `model_dict.py` must be in the same directory as `train_pinn.py`, or on your `PYTHONPATH`. They are inherited from the baseline repo.
-
----
-
-## Running Experiments
-
-All 7 conditions are run through the **same script** (`train_pinn.py`) with different CLI flags. This ensures identical hyperparameters and logging across every condition.
-
-### Quick smoke test (run this first)
-
-Before launching full experiments, run one short test to confirm your setup works:
+Every condition goes through `train_pinn.py`, so hyperparameters and logging are
+identical across the board. A static baseline just omits the switch flags:
 
 ```bash
-python train_pinn.py \
-  --pde reaction \
-  --dtype_start fp64 \
-  --optim_start lbfgs \
-  --total_epochs 50
-```
-
-You should see a `results/reaction/fp64lbfgs/` folder appear with 5 CSV files and 3 PDF plots. If that works, you're good to scale up.
-
----
-
-### The 7 experimental conditions
-
-#### Static baselines (no switch)
-
-These are your performance bounds. Omit `--dtype_switch`, `--optim_switch`, and `--switch_epoch` — the switch never fires.
-
-```bash
-# Best expected — FP64 L-BFGS
 python train_pinn.py --pde reaction --dtype_start fp64 --optim_start lbfgs
-
-# FP64 Adam
-python train_pinn.py --pde reaction --dtype_start fp64 --optim_start adam
-
-# FP32 L-BFGS
-python train_pinn.py --pde reaction --dtype_start fp32 --optim_start lbfgs
-
-# Worst expected — FP32 Adam
-python train_pinn.py --pde reaction --dtype_start fp32 --optim_start adam
 ```
 
-#### Switching conditions (novel contribution)
-
-Pass `--dtype_switch`, `--optim_switch`, and `--switch_epoch` to enable a mid-training switch.
+Passing `--dtype_switch`, `--optim_switch` and `--switch_epoch` together turns a
+run into a switching run:
 
 ```bash
-# FP32 Adam → FP64 Adam  (same optimizer, precision upgrade)
-python train_pinn.py \
-  --pde reaction \
-  --dtype_start fp32 --optim_start adam \
-  --dtype_switch fp64 --optim_switch adam \
-  --switch_epoch 1000
-
-# FP32 L-BFGS → FP64 L-BFGS  (same optimizer, precision upgrade)
-python train_pinn.py \
-  --pde reaction \
-  --dtype_start fp32 --optim_start lbfgs \
-  --dtype_switch fp64 --optim_switch lbfgs \
-  --switch_epoch 1000
-
-# FP32 Adam → FP64 L-BFGS  (cross-type — key novel condition)
 python train_pinn.py \
   --pde reaction \
   --dtype_start fp32 --optim_start adam \
@@ -127,154 +74,119 @@ python train_pinn.py \
   --switch_epoch 1000
 ```
 
----
+From Python, `run_all` sweeps conditions across PDEs and picks the epoch and
+switch budgets itself. It skips any condition that already has results, so an
+interrupted sweep resumes by re-running the same call:
 
-### Run all conditions on one PDE
-
-The included shell script runs all 7 conditions sequentially. Edit `DEVICE`, `TOTAL_EPOCHS`, and `SWITCH_EPOCH` at the top before running.
-
-```bash
-# Run all 7 conditions on reaction only
-bash run_all.sh reaction
-
-# Run all 7 conditions on wave only
-bash run_all.sh wave
-
-# Run all 7 on all PDEs (28 total runs — needs significant compute)
-bash run_all.sh
+```python
+tp.run_all(pdes=['reaction'], out_dir='./results', skip_existing=True)
 ```
 
----
+The two notebooks wrap this for the full sweep and for the FP64 ablation. Set
+`REPO_URL` in the environment first if you are running them on a fresh machine.
 
-### Compute notes
+### PDEs and budgets
 
-**Which PDE to run first:** Start with `reaction`. It converges fastest and is the most thoroughly tested. `wave` is the next best option. Skip `convection` if compute is limited — β=30 makes it stiff and slow. `ac` requires `allen_cahn.mat` from the baseline repo.
+| `--pde` | Equation | Epochs | Switch at |
+|---|---|---|---|
+| `reaction` | u_t = 5u(1-u), periodic | 2,000 | 1,000 |
+| `wave` | u_tt = 4u_xx, Dirichlet | 10,000 | 5,000 |
+| `ac` | Allen-Cahn, unweighted loss | 10,000 | 5,000 |
+| `ac_weighted` | Allen-Cahn, 10:1:100 loss weighting | 10,000 | 5,000 |
+| `convection` | u_t + 50u_x = 0, periodic, 401x401 grid | 50,000 | 25,000 |
+| `burgers` | u_t + uu_x = (0.01/pi)u_xx, Dirichlet | 10,000 | 5,000 |
 
-**L-BFGS is slow:** Each L-BFGS epoch involves multiple closure evaluations (strong Wolfe line search). Expect L-BFGS runs to take 3–10× longer than Adam runs at the same epoch count. Plan accordingly on Lambda.
+Start with `reaction`: it is the fastest to converge and the most exercised.
+`convection` is by far the most expensive — a 401x401 training grid for 50,000
+epochs — so leave it until last if compute is tight. The budgets for the first
+five come from Xu et al.; `burgers` has no counterpart there, so its budget is
+our own choice and should be reported as such.
 
-**Recommended run order if compute is limited:**
+`ac` and `ac_weighted` differ only in loss weighting and write to separate
+directories, so neither overwrites the other.
 
-1. `fp64lbfgs` (upper bound baseline — validate against Xu et al.)
-2. `fp32adam` (lower bound baseline)
-3. `fp32adam_to_fp64lbfgs` (key novel condition)
-4. Remaining 4 conditions
-
----
-
-## All CLI Options
+## Options
 
 | Flag | Default | Description |
 |---|---|---|
-| `--pde` | `reaction` | PDE to solve: `reaction`, `wave`, `convection`, `ac` |
-| `--model` | `PINN` | Model architecture (see `model_dict.py`) |
-| `--device` | `cuda:0` | PyTorch device string |
-| `--seed` | `1` | Random seed for reproducibility |
+| `--pde` | `reaction` | Which PDE to solve |
+| `--device` | `cuda:0` | PyTorch device string; falls back to CPU if unavailable |
+| `--seed` | `1` | Random seed |
 | `--dtype_start` | `fp32` | Phase 1 dtype: `fp32` or `fp64` |
 | `--optim_start` | `lbfgs` | Phase 1 optimizer: `adam` or `lbfgs` |
-| `--dtype_switch` | *(none)* | Phase 2 dtype. Omit for static runs |
-| `--optim_switch` | *(none)* | Phase 2 optimizer. Omit for static runs |
-| `--switch_epoch` | *(none)* | Epoch to perform switch (1-indexed). Omit for static runs |
-| `--total_epochs` | `2000` | Total training epochs |
+| `--dtype_switch` | *(none)* | Phase 2 dtype; omit for a static run |
+| `--optim_switch` | *(none)* | Phase 2 optimizer; omit for a static run |
+| `--switch_epoch` | *(none)* | Epoch at which to switch, 1-indexed |
+| `--total_epochs` | per-PDE | Defaults to the budget in the table above |
 | `--adam_lr` | `1e-3` | Adam learning rate |
 | `--lbfgs_tol_grad` | `1e-8` | L-BFGS gradient tolerance |
 | `--lbfgs_tol_change` | `1e-10` | L-BFGS step change tolerance |
+| `--mat_path` | per-PDE | Reference solution; resolved per PDE unless overridden |
 | `--out_dir` | `./results` | Root output directory |
 
----
+A switch only fires when `--switch_epoch` is set, is less than `--total_epochs`,
+and at least one of dtype or optimizer actually changes. Otherwise the run is
+recorded as static.
 
-## Log File Schema
+## Log schema
 
-Every run produces 5 CSV files in `results/<pde>/<condition>/`:
-
-**`*_loss.csv`** — per-epoch loss breakdown
+`*_loss.csv` — per epoch
 ```
 epoch, loss_res, loss_bc, loss_ic, total_loss, dtype, optim, phase, condition, pde
 ```
 
-**`*_timing.csv`** — per-epoch wall-clock time and GPU memory
+`*_timing.csv` — per epoch
 ```
 epoch, fwd_time_s, bwd_time_s, total_time_s, mem_allocated_mb, mem_reserved_mb, dtype, optim, phase, condition, pde
 ```
 
-**`*_grad.csv`** — per-epoch gradient norm
+`*_grad.csv` — per epoch
 ```
 epoch, grad_norm, dtype, optim, phase, condition, pde
 ```
 
-**`*_eval.csv`** — final evaluation metrics (one row per run)
+`*_eval.csv` — one row per run
 ```
 condition, pde, model, L1_rel, L2_rel, final_loss, switch_epoch, total_epochs, total_time_s, peak_mem_mb
 ```
 
-**`*_switch.csv`** — switch event record (one row per run, switching conditions only)
+`*_switch.csv` — one row, switching runs only
 ```
 condition, pde, model, switch_epoch, from_dtype, to_dtype, from_optim, to_optim, loss_at_switch, grad_norm_at_switch
 ```
 
-The `phase` column is `static` for static baselines, `pre_switch` before the switch, and `post_switch` after. This is the column used to draw the vertical switch-epoch line on all plots.
+`phase` is `static` for baselines and `pre_switch` / `post_switch` either side of
+a switch; it is what places the vertical switch line on the plots.
 
----
-
-## Generating Paper Figures
-
-Once you have results, run:
+## Figures
 
 ```bash
 python aggregate_results.py --results_dir ./results --out_dir ./paper_figures
 ```
 
-This produces in `./paper_figures/`:
-- `table1_summary.csv` — full results table
-- `table1_summary.tex` — LaTeX Table 1, ready to paste into Overleaf
-- `fig_loss_<pde>.pdf` — loss curves for all conditions, per PDE
-- `fig_l2_bars.pdf` — L2 error bar chart
-- `fig_timing_bars.pdf` — training time bar chart
+This writes `table1_summary.csv` and `.tex`, per-PDE loss curves
+(`fig_loss_<pde>.pdf`), and bar charts of relative L2 error and training time.
+Conditions with no results appear as em-dashes, so a partial sweep still
+produces a readable table.
 
----
+## Reproducing a run
 
-## Reproducing a Specific Run
-
-Every run saves a `*_config.json` with all CLI arguments used. To reproduce exactly:
+Every run saves its full argument list:
 
 ```bash
-# Read the config
 cat results/reaction/fp32adam_to_fp64lbfgs/reaction_PINN_fp32adam_to_fp64lbfgs_config.json
-
-# Re-run with identical settings
-python train_pinn.py --pde reaction --dtype_start fp32 --optim_start adam \
-  --dtype_switch fp64 --optim_switch lbfgs --switch_epoch 1000 \
-  --seed 1 --total_epochs 2000
 ```
 
----
+Re-running with those arguments reproduces the run. TF32 is disabled and
+deterministic kernels are requested at import time, so FP32 results are not
+silently computed in reduced precision.
 
-## Known Limitations
+## Limitations
 
-- Single random seed per condition. Results may vary across seeds. We acknowledge this in the paper's limitations section.
-- Convection (β=30) is computationally expensive. Results are included for completeness but we recommend starting with `reaction` or `wave` when compute is limited.
-- Allen-Cahn requires `allen_cahn.mat` from the original FP64 baseline repo. A synthetic fallback is provided but results will not match the paper baseline.
-- GPU memory logging shows `0.0` on CPU runs — this is expected.
-
----
-
-## Citation
-
-If you use this code, please cite:
-
-```bibtex
-@article{tmc-pinn-2025,
-  title   = {Dtype and Optimizer Switching in Physics-Informed Neural Networks},
-  author  = {[Authors]},
-  year    = {2025},
-}
-```
-
-And the baseline this work builds on:
-
-```bibtex
-@article{xu2025fp64,
-  title   = {FP64 Is All You Need},
-  author  = {Xu et al.},
-  year    = {2025},
-}
-```
+- One seed per condition. Differences between nearby conditions should be read
+  with that in mind.
+- Allen-Cahn and Burgers report `nan` for L2 if their `.mat` file is missing.
+  Training is unaffected; only the evaluation is.
+- GPU memory columns are `0.0` on CPU runs.
+- `--model` is accepted but ignored: every run uses the same 512-wide, 4-layer
+  tanh network defined in `train_pinn.py`.

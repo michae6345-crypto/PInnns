@@ -9,6 +9,6 @@ def get_model(args):
         'KAN': KAN,
         'PINNsFormer': PINNsFormer,
         'PINNMamba': PINNMamba,
-        'PINNsFormer_Enc_Only': PINNsFormer_Enc_Only, # more efficient and with better performance than original PINNsFormer
+        'PINNsFormer_Enc_Only': PINNsFormer_Enc_Only,
     }
     return model_dict[args.model]

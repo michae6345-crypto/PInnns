@@ -1,42 +1,29 @@
 """
-train_pinn.py  —  TMC-PINN Unified Training Script
-====================================================
-USAGE (Jupyter):
-    import importlib.util
-    spec = importlib.util.spec_from_file_location('train_pinn', './train_pinn.py')
-    tp   = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(tp)
+Training script for the precision/optimizer switching study.
 
-    # Single condition:
+A run is described by four fields: the dtype and optimizer it starts with, and
+the dtype and optimizer it switches to partway through. When the two halves
+match, the run is a static baseline. Seven conditions are compared per PDE --
+four static (fp64/fp32 x lbfgs/adam) and three switching (fp32adam->fp64adam,
+fp32lbfgs->fp64lbfgs, fp32adam->fp64lbfgs).
+
+From the command line:
+
+    python train_pinn.py --pde wave --dtype_start fp32 --optim_start adam \\
+        --dtype_switch fp64 --optim_switch lbfgs --switch_epoch 5000
+
+From a notebook, load the file as a module and call main() or run_all():
+
     tp.main(pde='wave', dtype_start='fp64', optim_start='lbfgs')
-
-    # Multiple PDEs — skips already-completed runs:
     tp.run_all(pdes=['wave', 'ac'])
-    tp.run_all(pdes=['convection'])   # run convection separately — it's long
 
-7 CONDITIONS per PDE (reaction, wave, ac, convection):
-    Static:    fp64lbfgs, fp64adam, fp32lbfgs, fp32adam
-    Switching: fp32adam->fp64adam, fp32lbfgs->fp64lbfgs, fp32adam->fp64lbfgs
+Epoch budgets for reaction, wave, ac and convection follow Xu et al.
+(miniHuiHui/PINN_FP64); the switch always happens at the halfway point. Burgers
+has no counterpart there, so its budget is our own choice.
 
-BURGERS (targeted stiffness-generalization test -- NOT run as all 7):
-    Formulation: Raissi, Perdikaris & Karniadakis 2019 (J. Comput. Phys.
-    378:686-707) -- standard PINN benchmark instance, nu=0.01/pi, Dirichlet BC.
-    No Xu et al. precedent for epoch budget -- ours is a tentative default,
-    confirm via sanity run before committing the full subset. Recommended
-    subset (NOT the full 7 -- see conversation with mentor for rationale):
-        python train_pinn.py --pde burgers --dtype_start fp64 --optim_start lbfgs
-        python train_pinn.py --pde burgers --dtype_start fp32 --optim_start lbfgs
-        python train_pinn.py --pde burgers --dtype_start fp32 --optim_start lbfgs \\
-            --dtype_switch fp64 --optim_switch lbfgs --switch_epoch 5000
-    Requires burgers_shock.mat (Raissi et al. supplementary data,
-    maziarraissi/PINNs repo) in the working directory for L2 eval.
-
-EPOCH BUDGET (matches Xu et al. miniHuiHui/PINN_FP64 exactly, except burgers):
-    reaction:   2,000   switch @ 1,000
-    wave:      10,000   switch @ 5,000
-    ac:        10,000   switch @ 5,000
-    convection: 50,000  switch @ 25,000  <- long run, plan accordingly
-    burgers:   10,000   switch @ 5,000   <- TENTATIVE, no source precedent
+Allen-Cahn and Burgers need allen_cahn.mat and burgers_shock.mat respectively
+in the working directory. These are only read for the final L2 evaluation --
+training runs fine without them and reports nan.
 """
 
 import subprocess, sys
@@ -61,16 +48,14 @@ import matplotlib.pyplot as plt
 from torch.optim import LBFGS, Adam
 from tqdm import tqdm
 
-# Per-PDE epoch budgets — matches Xu et al. miniHuiHui/PINN_FP64 exactly
-# NOTE: 'burgers' has NO Xu et al. precedent. Budget below is our own choice,
-# not inherited — disclose this explicitly in the paper (unlike the other 4).
+# Budgets follow Xu et al. except for burgers, which has no counterpart there.
 PDE_EPOCHS = {
     'reaction':    2000,
     'wave':        10000,
     'ac':          10000,
-    'ac_weighted': 10000,  # same budget as ac — Xu et al. exact weighting (10*res + bc + 100*ic)
+    'ac_weighted': 10000,
     'convection':  50000,
-    'burgers':     10000,  # tentative — confirm via sanity-check run before committing
+    'burgers':     10000,
 }
 PDE_SWITCH = {k: v // 2 for k, v in PDE_EPOCHS.items()}
 
@@ -97,10 +82,12 @@ configure_cuda()
 
 
 # ---------------------------------------------------------------------------
-# MODEL  (1024x6, Xavier -- matches Xu et al. reaction_fp64.py exactly)
+# MODEL
 # ---------------------------------------------------------------------------
 
 class PINN_Model(nn.Module):
+    """Fully connected tanh network, Xavier-initialised, zero biases."""
+
     def __init__(self, in_dim=2, hidden_dim=512, out_dim=1, num_layer=4):
         super().__init__()
         layers = [nn.Linear(in_dim, hidden_dim), nn.Tanh()]
@@ -124,7 +111,8 @@ def build_model(dtype, device):
 
 # ---------------------------------------------------------------------------
 # DATA GRID
-# b_left  = t=0 (IC), b_upper = x=x_max (BC), b_lower = x=x_min (BC)
+# b_left is the t=0 slice (initial condition); b_upper and b_lower are the
+# x=x_max and x=x_min slices (boundary conditions).
 # ---------------------------------------------------------------------------
 
 def get_data(x_range, t_range, x_num, t_num):
@@ -158,13 +146,12 @@ def _make_T(res, b_left, b_upper, b_lower, dtype, device):
 
 
 # ---------------------------------------------------------------------------
-# PDE DEFINITIONS  (verified against Xu et al. miniHuiHui/PINN_FP64)
+# PDE DEFINITIONS
 # ---------------------------------------------------------------------------
 
 def build_reaction_pde(device, dtype, **_):
     """
-    u_t = 5u(1-u), u(x,0)=Gaussian, periodic BC.
-    [0,2pi]x[0,1], 101x101, 2000 epochs.
+    u_t = 5u(1-u) on [0,2pi]x[0,1], Gaussian IC, periodic BC.
     """
     res, b_left, _, b_upper, b_lower = get_data([0, 2*np.pi], [0, 1], 101, 101)
     T = _make_T(res, b_left, b_upper, b_lower, dtype, device)
@@ -192,10 +179,8 @@ def build_reaction_pde(device, dtype, **_):
 
 def build_wave_pde(device, dtype, **_):
     """
-    u_tt = 4*u_xx  (c=2),
-    u(x,0) = sin(pi*x) + 0.5*sin(3*pi*x),  u_t(x,0)=0,  Dirichlet BC=0.
-    [0,1]x[0,1], 101x101, 10000 epochs.
-    Source: Xu et al. wave_fp64.py  loss_res = mean((u_tt - 4*u_xx)^2)
+    u_tt = 4*u_xx (c=2) on [0,1]x[0,1].
+    IC: u(x,0) = sin(pi*x) + 0.5*sin(3*pi*x), u_t(x,0) = 0. Dirichlet BC = 0.
     """
     pi = np.pi
     res, b_left, _, b_upper, b_lower = get_data([0, 1], [0, 1], 101, 101)
@@ -238,9 +223,8 @@ def build_wave_pde(device, dtype, **_):
 
 def build_convection_pde(device, dtype, **_):
     """
-    u_t + 50*u_x = 0,  u(x,0)=sin(x),  periodic BC.
-    Train grid: 401x401.  Test grid: 101x101.  50000 epochs.
-    Source: Xu et al. convection_fp64.py  beta=50, get_data 401x401.
+    u_t + 50*u_x = 0 on [0,2pi]x[0,1], u(x,0) = sin(x), periodic BC.
+    Trained on a 401x401 grid and evaluated on 101x101.
     """
     beta = 50.0
     res, b_left, _, b_upper, b_lower = get_data([0, 2*np.pi], [0, 1], 401, 401)
@@ -270,12 +254,9 @@ def build_convection_pde(device, dtype, **_):
 
 def build_ac_pde(device, dtype, mat_path='allen_cahn.mat', **_):
     """
-    Allen-Cahn: u_t - 0.0001*u_xx + 5(u^3-u)=0
-    IC (analytic): x^2*cos(pi*x)  -- does NOT need .mat for training
-    BC: periodic value + derivative
-    [-1,1]x[0,1], 101x101, 10000 epochs.
-    .mat loaded AFTER training for L2 evaluation only.
-    Source: Xu et al. ac_fp64.py
+    u_t - 0.0001*u_xx + 5(u^3-u) = 0 on [-1,1]x[0,1].
+    IC: x^2*cos(pi*x). BC: periodic in both value and derivative.
+    Unweighted loss. The .mat file is only read for the L2 evaluation.
     """
     res, b_left, _, b_upper, b_lower = get_data([-1, 1], [0, 1], 101, 101)
     T = _make_T(res, b_left, b_upper, b_lower, dtype, device)
@@ -332,13 +313,12 @@ def build_ac_pde(device, dtype, mat_path='allen_cahn.mat', **_):
 
 def build_ac_weighted_pde(device, dtype, mat_path='allen_cahn.mat', **_):
     """
-    Allen-Cahn with Xu et al. exact loss weighting:
-        loss = 10*l_res + l_bc + 100*l_ic
-    Source: miniHuiHui/PINN_FP64/ac_fp64.py line:
-        loss = 10 * loss_res + loss_bc_1 + loss_bc_2 + 100 * loss_ic
+    Allen-Cahn with the loss weighting used by Xu et al.:
 
-    Everything else (PDE, IC, BC, grid, epochs) is identical to build_ac_pde.
-    Results saved under pde='ac_weighted' so they never overwrite ac (1:1:1) runs.
+        loss = 10*l_res + l_bc + 100*l_ic
+
+    Identical to build_ac_pde in every other respect. Runs are stored under
+    pde='ac_weighted' so they never overwrite the unweighted ones.
     """
     res, b_left, _, b_upper, b_lower = get_data([-1, 1], [0, 1], 101, 101)
     T = _make_T(res, b_left, b_upper, b_lower, dtype, device)
@@ -369,7 +349,6 @@ def build_ac_weighted_pde(device, dtype, mat_path='allen_cahn.mat', **_):
         l_ic  = torch.mean((u_ic[:,0] -
                              (T['x_left'][:,0]**2) *
                              torch.cos(np.pi * T['x_left'][:,0]))**2)
-        # Xu et al. exact weighting: 10*res + bc_val + bc_deriv + 100*ic
         return 10*l_res, l_bc, 100*l_ic
 
     exact_fn = None
@@ -396,25 +375,19 @@ def build_ac_weighted_pde(device, dtype, mat_path='allen_cahn.mat', **_):
 
 def build_burgers_pde(device, dtype, mat_path='burgers_shock.mat', **_):
     """
-    Viscous Burgers' equation (Raissi, Perdikaris & Karniadakis 2019,
-    J. Comput. Phys. 378:686-707 — the standard PINN benchmark instance).
+    Viscous Burgers' equation as posed in Raissi, Perdikaris & Karniadakis
+    (2019), J. Comput. Phys. 378:686-707:
 
-        u_t + u*u_x - nu*u_xx = 0,   nu = 0.01/pi
+        u_t + u*u_x - nu*u_xx = 0,  nu = 0.01/pi,  on [-1,1]x[0,1]
         u(x,0) = -sin(pi*x)
-        u(-1,t) = u(1,t) = 0          <-- DIRICHLET, not periodic (differs
-                                           from reaction/wave/convection/AC)
-        [-1,1]x[0,1], 101x101.
+        u(-1,t) = u(1,t) = 0
 
-    Loss weighting: unweighted l_res + l_bc + l_ic, matching Raissi et al.
-    and matching the convention already used for reaction/wave/convection
-    (only AC departs from this, with its 10:1:1:100 weighting).
+    Note the Dirichlet boundary, which differs from the periodic conditions
+    used by the other PDEs here. The loss is unweighted.
 
-    .mat reference solution: verify key names before trusting them.
-    Raissi's supplementary file (maziarraissi/PINNs repo) commonly uses
-    't' / 'x' / 'usol', NOT the 'tt'/'uu' keys used by allen_cahn.mat —
-    do not assume the AC convention carries over here (that exact mistake
-    cost a transpose bug on AC; this loader checks key names explicitly
-    and fails loudly rather than silently mis-loading).
+    Reference solutions ship under two different key conventions, so the
+    loader below checks the keys and the array orientation rather than
+    assuming either.
     """
     nu = 0.01 / np.pi
     res, b_left, _, b_upper, b_lower = get_data([-1, 1], [0, 1], 101, 101)
@@ -447,9 +420,6 @@ def build_burgers_pde(device, dtype, mat_path='burgers_shock.mat', **_):
         available_keys = [k for k in data.keys() if not k.startswith('__')]
         print(f'[Burgers] {mat_path} keys found: {available_keys}')
 
-        # Try the Raissi-convention keys first; fall back to AC-style keys
-        # ONLY if Raissi keys are absent, and print which path was taken —
-        # never assume silently.
         if 't' in data and 'x' in data and 'usol' in data:
             t_arr = data['t'].flatten()
             x_arr = data['x'].flatten()
@@ -459,27 +429,22 @@ def build_burgers_pde(device, dtype, mat_path='burgers_shock.mat', **_):
             t_arr = data['tt'].flatten()
             x_arr = data['x'].flatten()
             usol  = np.real(data['uu'])
-            print('[Burgers] Using AC-convention keys: tt / x / uu '
-                  '(unexpected for this file — double-check source)')
+            print('[Burgers] Using AC-convention keys: tt / x / uu')
         else:
             raise KeyError(
-                f'No recognized key combination in {available_keys}. '
-                f'Inspect the .mat file manually before proceeding — '
-                f'do not guess the shape/orientation.'
+                f'No recognized key combination in {available_keys}.'
             )
 
-        # Verify orientation against expected grid size rather than assuming
-        # (x,t) vs (t,x) — the AC loader needed a transpose fix for exactly
-        # this reason.
         if usol.shape == (len(t_arr), len(x_arr)):
-            print(f'[Burgers] usol shape {usol.shape} is (t,x) -- transposing to (x,t)')
+            print(f'[Burgers] usol shape {usol.shape} is (t,x); transposing')
             usol = usol.T
         elif usol.shape == (len(x_arr), len(t_arr)):
-            print(f'[Burgers] usol shape {usol.shape} already (x,t) -- no transpose needed')
+            print(f'[Burgers] usol shape {usol.shape} is already (x,t)')
         else:
             raise ValueError(
-                f'usol shape {usol.shape} matches neither (t,x)=({len(t_arr)},{len(x_arr)}) '
-                f'nor (x,t)=({len(x_arr)},{len(t_arr)}) -- inspect manually.'
+                f'usol shape {usol.shape} matches neither '
+                f'(t,x)=({len(t_arr)},{len(x_arr)}) '
+                f'nor (x,t)=({len(x_arr)},{len(t_arr)}).'
             )
 
         def exact_fn(xy):
@@ -504,10 +469,9 @@ PDE_BUILDERS = {
     'burgers':     build_burgers_pde,
 }
 
-# Per-PDE default reference-solution files. mat_path is only ever an
-# explicit OVERRIDE when passed by the caller — it must never silently
-# fall back to allen_cahn.mat for a different PDE (that mismatch would
-# load the wrong ground truth without raising an error).
+# Reference solution used by each PDE's L2 evaluation. Callers may override
+# mat_path explicitly; otherwise the PDE picks its own file rather than
+# inheriting another PDE's ground truth.
 PDE_MAT_DEFAULTS = {
     'ac':          'allen_cahn.mat',
     'ac_weighted': 'allen_cahn.mat',
@@ -754,9 +718,7 @@ def main(**kwargs):
     run_dir = os.path.join(args.out_dir, args.pde, args.condition)
     paths   = open_logs(run_dir, args.condition, args.pde)
 
-    # Resolve mat_path per-PDE if the caller left it at the generic default
-    # rather than explicitly overriding it -- prevents e.g. burgers runs
-    # silently trying to load allen_cahn.mat.
+    # Only treat mat_path as an override if the caller actually changed it.
     resolved_mat_path = args.mat_path
     if resolved_mat_path == 'allen_cahn.mat' and args.pde in PDE_MAT_DEFAULTS:
         resolved_mat_path = PDE_MAT_DEFAULTS[args.pde]
@@ -862,24 +824,13 @@ ALL_CONDITIONS = [
 def run_all(pdes=None, conditions=None, out_dir='./results',
             skip_existing=True, mat_path='allen_cahn.mat', **shared_kwargs):
     """
-    Run all 7 conditions across selected PDEs.
+    Run a set of conditions across a set of PDEs.
 
-    pdes: list of PDEs to run.
-          ['wave', 'ac']          -- run wave and AC
-          ['convection']          -- run only convection (long!)
-          ['burgers']             -- run burgers (~4-6 hrs, all 7 conditions)
-          None                    -- all 5 PDEs (reaction/wave/ac/convection/burgers)
-
-    Burgers' runs all 7 conditions the same as the other PDEs.
-    Epoch counts and switch epochs are set automatically per PDE.
-    Already-completed runs are skipped (skip_existing=True).
-    mat_path is resolved per-PDE automatically -- burgers uses burgers_shock.mat,
-    ac uses allen_cahn.mat; you do not need to pass mat_path manually.
-
-    Example:
-        run_all(pdes=['wave', 'ac'])
-        run_all(pdes=['convection'])   # do this separately, it takes hours
-        run_all(pdes=['burgers'])      # all 7 conditions, ~4-6 hrs
+    pdes defaults to every PDE except ac_weighted; conditions defaults to the
+    seven in ALL_CONDITIONS. Epoch and switch budgets come from PDE_EPOCHS, and
+    the reference solution file is chosen per PDE. With skip_existing set, a
+    condition that already has a non-empty eval CSV is left alone, so an
+    interrupted sweep can be resumed by re-running the same call.
     """
     if pdes is None:
         pdes = ['reaction', 'wave', 'convection', 'ac', 'burgers']
@@ -896,8 +847,6 @@ def run_all(pdes=None, conditions=None, out_dir='./results',
         print(f'  PDE: {pde}  |  {ep} epochs  |  switch @ {sw}')
         print(f'{"="*55}')
 
-        # Resolve mat_path per-PDE so burgers never silently
-        # inherits allen_cahn.mat as the default.
         resolved_mat = mat_path
         if resolved_mat == 'allen_cahn.mat' and pde in PDE_MAT_DEFAULTS:
             resolved_mat = PDE_MAT_DEFAULTS[pde]

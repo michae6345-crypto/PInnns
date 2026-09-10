@@ -31,36 +31,27 @@ def get_n_params(model):
 
 def make_time_sequence(src, num_step=5, step=1e-4):
     dim = num_step
-    #src = src.reshape(101, -1, 2)
     src = np.repeat(np.expand_dims(src, axis=1), dim, axis=1)  # (N, L, 2)
     for i in range(num_step):
         src[:, i, -1] += step * i
-    #print(src)
-    #src = src.transpose(0,2,1)
     return src
 
 def make_time_1_sequence(src, num_step=5, step=1e-4):
     dim = num_step
-    #src = src.reshape(101, -1, 2)
     src = np.repeat(np.expand_dims(src, axis=1), dim, axis=1)  # (N, L, 2)
     for i in range(num_step):
         src[:, i, -1] += step * i
         for j in range(101):
             if (src[j, i, -1] >= 1.0):
                 src[j, i, -1] = 1.0
-    #print(src)
-    #src = src.transpose(0,2,1)
     return src
 
 def make_time_reverse_sequence(src, num_step=5, step=1e-4):
     dim = num_step
-    #src = src.reshape(101, -1, 2)
     src = np.repeat(np.expand_dims(src, axis=1), dim, axis=1)  # (N, L, 2)
     for i in range(num_step):
         src[:, i, -1] -= step * i
     np.flip(src,1)
-    #print(src)
-    #src = src.transpose(0,2,1)
     return src
 
 

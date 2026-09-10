@@ -1,0 +1,7 @@
+__pycache__/
+*.py[cod]
+
+results/
+results_*/
+paper_figures/
+*.zip
