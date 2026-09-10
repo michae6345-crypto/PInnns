@@ -3,9 +3,11 @@ Training script for the precision/optimizer switching study.
 
 A run is described by four fields: the dtype and optimizer it starts with, and
 the dtype and optimizer it switches to partway through. When the two halves
-match, the run is a static baseline. Seven conditions are compared per PDE --
-four static (fp64/fp32 x lbfgs/adam) and three switching (fp32adam->fp64adam,
-fp32lbfgs->fp64lbfgs, fp32adam->fp64lbfgs).
+match, the run is a static baseline. Eight conditions are compared per PDE --
+four static (fp64/fp32 x lbfgs/adam) and four switching (fp32adam->fp64adam,
+fp32lbfgs->fp64lbfgs, fp32adam->fp64lbfgs, fp64adam->fp64lbfgs). The last of
+these holds precision at FP64 throughout, isolating the optimizer switch from
+the precision switch.
 
 From the command line:
 
@@ -814,6 +816,7 @@ ALL_CONDITIONS = [
     dict(dtype_start='fp32', optim_start='adam',  dtype_switch='fp64', optim_switch='adam'),
     dict(dtype_start='fp32', optim_start='lbfgs', dtype_switch='fp64', optim_switch='lbfgs'),
     dict(dtype_start='fp32', optim_start='adam',  dtype_switch='fp64', optim_switch='lbfgs'),
+    dict(dtype_start='fp64', optim_start='adam',  dtype_switch='fp64', optim_switch='lbfgs'),
 ]
 
 
@@ -827,7 +830,7 @@ def run_all(pdes=None, conditions=None, out_dir='./results',
     Run a set of conditions across a set of PDEs.
 
     pdes defaults to every PDE except ac_weighted; conditions defaults to the
-    seven in ALL_CONDITIONS. Epoch and switch budgets come from PDE_EPOCHS, and
+    eight in ALL_CONDITIONS. Epoch and switch budgets come from PDE_EPOCHS, and
     the reference solution file is chosen per PDE. With skip_existing set, a
     condition that already has a non-empty eval CSV is left alone, so an
     interrupted sweep can be resumed by re-running the same call.

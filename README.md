@@ -6,7 +6,7 @@ code for a study of what happens if you do not have to choose — start a run in
 FP32, then switch precision, optimizer, or both partway through, and see where
 the resulting error and wall time land relative to the static baselines.
 
-Seven conditions are compared per PDE:
+Eight conditions are compared per PDE:
 
 | | Phase 1 | Phase 2 |
 |---|---|---|
@@ -19,9 +19,10 @@ Seven conditions are compared per PDE:
 | `fp32adam_to_fp64adam` | FP32 Adam | FP64 Adam |
 | `fp32lbfgs_to_fp64lbfgs` | FP32 L-BFGS | FP64 L-BFGS |
 | `fp32adam_to_fp64lbfgs` | FP32 Adam | FP64 L-BFGS |
+| `fp64adam_to_fp64lbfgs` | FP64 Adam | FP64 L-BFGS |
 
-An eighth condition, `fp64adam_to_fp64lbfgs`, isolates the optimizer switch by
-holding precision at FP64 throughout. It lives in its own notebook.
+The last of these never changes precision, so it separates the effect of
+switching optimizer from the effect of switching dtype.
 
 The static baselines and the epoch budgets follow Xu et al., *FP64 Is All You
 Need* (2025), whose reference implementation is at `miniHuiHui/PINN_FP64`.
@@ -33,8 +34,7 @@ Need* (2025), whose reference implementation is at `miniHuiHui/PINN_FP64`.
 ```
 train_pinn.py                                  training script, all conditions
 aggregate_results.py                           builds the paper tables and figures
-run_experiments.ipynb                          all seven conditions, per PDE
-run_experiments_fp64adam_to_fp64lbfgs.ipynb    the FP64 optimizer-switch ablation
+run_experiments.ipynb                          all eight conditions, per PDE
 util.py, model_dict.py, models/                inherited from the baseline repo
 allen_cahn.mat, burgers_shock.mat              reference solutions for L2 evaluation
 results/                                       created on first run
@@ -82,8 +82,8 @@ interrupted sweep resumes by re-running the same call:
 tp.run_all(pdes=['reaction'], out_dir='./results', skip_existing=True)
 ```
 
-The two notebooks wrap this for the full sweep and for the FP64 ablation. Set
-`REPO_URL` in the environment first if you are running them on a fresh machine.
+`run_experiments.ipynb` wraps this, one cell per PDE. Set `REPO_URL` in the
+environment first if you are running it on a fresh machine.
 
 ### PDEs and budgets
 
