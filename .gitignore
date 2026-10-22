@@ -3,5 +3,6 @@ __pycache__/
 
 results/
 results_*/
+!results_opt2026/
 paper_figures/
 *.zip

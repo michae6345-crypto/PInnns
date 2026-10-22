@@ -1,0 +1,1 @@
+condition,pde,model,switch_epoch,from_dtype,to_dtype,from_optim,to_optim,loss_at_switch,grad_norm_at_switch

@@ -1,0 +1,2 @@
+condition,pde,model,switch_epoch,from_dtype,to_dtype,from_optim,to_optim,loss_at_switch,grad_norm_at_switch
+fp32adam_to_fp64adam,ac_weighted,PINN,5000,fp32,fp64,adam,adam,7.50982761e+00,7.29663028e+00

@@ -1,0 +1,2 @@
+condition,pde,model,L1_rel,L2_rel,final_loss,switch_epoch,total_epochs,total_time_s,peak_mem_mb
+fp32lbfgs_to_fp64lbfgs,burgers,PINN,8.34281760e-03,8.12810860e-02,4.44174363e-06,5000,10000,4484.47,1356.97

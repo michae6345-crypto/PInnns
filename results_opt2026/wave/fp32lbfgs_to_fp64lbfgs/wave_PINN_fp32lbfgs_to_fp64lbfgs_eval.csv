@@ -1,0 +1,2 @@
+condition,pde,model,L1_rel,L2_rel,final_loss,switch_epoch,total_epochs,total_time_s,peak_mem_mb
+fp32lbfgs_to_fp64lbfgs,wave,PINN,8.03005798e-03,8.19780974e-03,1.93282710e-05,5000,10000,6239.71,1358.91

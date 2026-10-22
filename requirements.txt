@@ -1,0 +1,7 @@
+# Versions used for the paper's runs: torch 2.7.0 with CUDA 12.8 on one NVIDIA H100.
+torch==2.7.0
+numpy
+pandas
+scipy
+matplotlib
+tqdm

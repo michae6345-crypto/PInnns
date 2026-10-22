@@ -1,0 +1,2 @@
+condition,pde,model,L1_rel,L2_rel,final_loss,switch_epoch,total_epochs,total_time_s,peak_mem_mb
+fp64lbfgs,reaction,PINN,3.02608793e-02,5.52830025e-02,1.33765869e-05,None,2000,630.05,3359.16

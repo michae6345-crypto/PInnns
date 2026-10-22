@@ -1,0 +1,2 @@
+condition,pde,model,switch_epoch,from_dtype,to_dtype,from_optim,to_optim,loss_at_switch,grad_norm_at_switch
+fp64adam_to_fp64lbfgs,reaction,PINN,1000,fp64,fp64,adam,lbfgs,2.08921788e-01,9.95305889e-02
