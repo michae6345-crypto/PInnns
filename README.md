@@ -76,8 +76,8 @@ Each run is in `results_opt2026/<pde>/<configuration>/`:
 - `*_switch.csv`: loss and gradient norm at the switch.
 - `*_config.json`: every argument plus the GPU, PyTorch and CUDA versions.
 
-Model weights are not included. Ignore the `peak_mem_mb` column: it records
-current, not peak, allocation.
+Model weights are not included. The `peak_mem_mb` column is the highest per-epoch
+`memory_allocated` reading, not the CUDA peak.
 
 ## Limitations
 
