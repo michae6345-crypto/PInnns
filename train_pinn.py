@@ -64,10 +64,6 @@ PDE_SWITCH = {k: v // 2 for k, v in PDE_EPOCHS.items()}
 DTYPE_MAP = {'fp32': torch.float32, 'fp64': torch.float64}
 
 
-# ---------------------------------------------------------------------------
-# CUDA
-# ---------------------------------------------------------------------------
-
 def configure_cuda():
     if not torch.cuda.is_available():
         print('[CUDA] No GPU -- CPU mode.')
@@ -82,10 +78,6 @@ def configure_cuda():
 
 configure_cuda()
 
-
-# ---------------------------------------------------------------------------
-# MODEL
-# ---------------------------------------------------------------------------
 
 class PINN_Model(nn.Module):
     """Fully connected tanh network, Xavier-initialised, zero biases."""
@@ -111,12 +103,8 @@ def build_model(dtype, device):
     return model.to(dtype).to(device)
 
 
-# ---------------------------------------------------------------------------
-# DATA GRID
 # b_left is the t=0 slice (initial condition); b_upper and b_lower are the
 # x=x_max and x=x_min slices (boundary conditions).
-# ---------------------------------------------------------------------------
-
 def get_data(x_range, t_range, x_num, t_num):
     x = np.linspace(x_range[0], x_range[1], x_num)
     t = np.linspace(t_range[0], t_range[1], t_num)
@@ -146,10 +134,6 @@ def _make_T(res, b_left, b_upper, b_lower, dtype, device):
         't_lower': _ten(b_lower[:,1:2], dtype, device),
     }
 
-
-# ---------------------------------------------------------------------------
-# PDE DEFINITIONS
-# ---------------------------------------------------------------------------
 
 def build_reaction_pde(device, dtype, **_):
     """
@@ -481,10 +465,6 @@ PDE_MAT_DEFAULTS = {
 }
 
 
-# ---------------------------------------------------------------------------
-# OPTIMIZER / CAST
-# ---------------------------------------------------------------------------
-
 def make_optimizer(key, model, adam_lr=1e-3,
                    lbfgs_tol_grad=1e-8, lbfgs_tol_change=1e-10):
     if key == 'adam':
@@ -497,10 +477,6 @@ def cast_tensors(tensors, dtype, device):
     return {k: v.detach().to(dtype=dtype, device=device).requires_grad_(v.requires_grad)
             for k, v in tensors.items()}
 
-
-# ---------------------------------------------------------------------------
-# LOGGING
-# ---------------------------------------------------------------------------
 
 def open_logs(run_dir, condition, pde):
     os.makedirs(run_dir, exist_ok=True)
@@ -538,10 +514,6 @@ def log_epoch(paths, epoch, lr_v, lbc_v, lic_v, tot_v,
         f.write(f'{epoch},{grad_norm:.8e},{dtype_str},{optim_str},{phase},{condition},{pde}\n')
 
 
-# ---------------------------------------------------------------------------
-# TRAIN STEP
-# ---------------------------------------------------------------------------
-
 def train_one_epoch(model, optim, tensors, loss_fn):
     timing = [0.0, 0.0]
     last   = [None]
@@ -569,10 +541,6 @@ def train_one_epoch(model, optim, tensors, loss_fn):
     return *last[0], timing[0], timing[1], grad_norm
 
 
-# ---------------------------------------------------------------------------
-# EVALUATION
-# ---------------------------------------------------------------------------
-
 def evaluate(model, res_test, exact_fn, dtype, device):
     if exact_fn is None:
         return float('nan'), float('nan')
@@ -585,10 +553,6 @@ def evaluate(model, res_test, exact_fn, dtype, device):
     rl2 = np.sqrt(np.sum((u-pred_r)**2) / np.sum(u**2))
     return float(rl1), float(rl2)
 
-
-# ---------------------------------------------------------------------------
-# PLOTS
-# ---------------------------------------------------------------------------
 
 def save_plots(run_dir, condition, pde, paths, switch_epoch):
     prefix = f'{run_dir}/{pde}_PINN_{condition}'
@@ -628,10 +592,6 @@ def save_plots(run_dir, condition, pde, paths, switch_epoch):
     except Exception as e:
         print(f'[plot] timing: {e}')
 
-
-# ---------------------------------------------------------------------------
-# ARGS
-# ---------------------------------------------------------------------------
 
 def parse_args(pde='reaction', model='PINN', device='cuda:0', seed=1,
                dtype_start='fp64', optim_start='lbfgs',
@@ -689,10 +649,6 @@ def parse_args(pde='reaction', model='PINN', device='cuda:0', seed=1,
     args.is_switching = is_switching
     return args
 
-
-# ---------------------------------------------------------------------------
-# MAIN
-# ---------------------------------------------------------------------------
 
 def main(**kwargs):
     args   = parse_args(**kwargs)
@@ -804,10 +760,6 @@ def main(**kwargs):
     return rl1, rl2, total_wall
 
 
-# ---------------------------------------------------------------------------
-# ALL_CONDITIONS
-# ---------------------------------------------------------------------------
-
 ALL_CONDITIONS = [
     dict(dtype_start='fp64', optim_start='lbfgs'),
     dict(dtype_start='fp64', optim_start='adam'),
@@ -819,10 +771,6 @@ ALL_CONDITIONS = [
     dict(dtype_start='fp64', optim_start='adam',  dtype_switch='fp64', optim_switch='lbfgs'),
 ]
 
-
-# ---------------------------------------------------------------------------
-# run_all — select which PDEs to run, skips completed runs
-# ---------------------------------------------------------------------------
 
 def run_all(pdes=None, conditions=None, out_dir='./results',
             skip_existing=True, mat_path='allen_cahn.mat', **shared_kwargs):
